@@ -19,15 +19,18 @@ from telegram.ext import (
 )
 
 # ────────────────────────────────────────────────
-# تنظیمات اصلی
+# تنظیمات اصلی (همه از Environment Variables خوانده می‌شوند)
 # ────────────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
-MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"
+MAIN_GROUP_LINK = os.getenv("MAIN_GROUP_LINK", "https://t.me/+kCh_9St0vVdhNGJk")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "-1003703559282"))
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7940304990"))
-REJECT_BAN_HOURS = 24
+REJECT_BAN_HOURS = int(os.getenv("REJECT_BAN_HOURS", "24"))
 
-MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_URI = os.getenv("MONGODB_URI")  # اجباری - از Railway یا Atlas
+
+if not MONGODB_URI:
+    raise ValueError("MONGODB_URI تنظیم نشده است. در Railway اضافه کنید.")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -53,7 +56,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
 )
 
 # ────────────────────────────────────────────────
-# پنل رئیس ربات (/admin)
+# پنل رئیس ربات (/admin) – تمام گزینه‌ها فعال
 # ────────────────────────────────────────────────
 def get_admin_panel():
     keyboard = [
@@ -90,7 +93,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         approved = users_collection.count_documents({"status": "approved"})
         rejected = users_collection.count_documents({"status": "rejected"})
 
-        text = f"📊 آمار کاربران:\n\nکل: {total}\nتایید شده: {approved}\nرد شده: {rejected}"
+        text = (
+            f"📊 آمار کاربران:\n\n"
+            f"کل کاربران: {total}\n"
+            f"تایید شده: {approved}\n"
+            f"رد شده: {rejected}"
+        )
         await query.edit_message_text(text, reply_markup=get_admin_panel())
 
     elif data == "admin_broadcast":
@@ -102,20 +110,26 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["admin_mode"] = "search_user"
 
     elif data == "admin_rejected_list":
-        rejected = list(users_collection.find({"status": "rejected"}))
-        text = "هیچ کاربری رد نشده است." if not rejected else "🚫 کاربران رد شده:\n\n"
-        for u in rejected:
-            text += f"ID: {u['user_id']} | {u['full_name']} | @{u.get('username', 'ندارد')} | تا: {u.get('reject_until', '-')}\n"
+        rejected = list(users_collection.find({"status": "rejected"}).sort("reject_until", -1).limit(50))
+        if not rejected:
+            text = "هیچ کاربری رد نشده است."
+        else:
+            text = "🚫 لیست کاربران رد شده (۵۰ مورد آخر):\n\n"
+            for u in rejected:
+                text += f"ID: {u['user_id']} | {u['full_name']} | @{u.get('username', 'ندارد')} | تا: {u.get('reject_until', '-')}\n"
         await query.edit_message_text(text, reply_markup=get_admin_panel())
 
     elif data == "admin_delete_user":
-        await query.edit_message_text("🗑 آیدی عددی کاربر را وارد کنید.")
+        await query.edit_message_text("🗑 آیدی عددی کاربر را برای حذف وارد کنید:")
         context.user_data["admin_mode"] = "delete_user"
 
     elif data == "admin_reset_user":
-        await query.edit_message_text("🔄 آیدی عددی کاربر را وارد کنید.")
+        await query.edit_message_text("🔄 آیدی عددی کاربر را برای ریست وضعیت وارد کنید:")
         context.user_data["admin_mode"] = "reset_user"
 
+# ────────────────────────────────────────────────
+# هندلر متن پنل رئیس
+# ────────────────────────────────────────────────
 async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or "admin_mode" not in context.user_data:
         return
@@ -166,7 +180,7 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 await update.message.reply_text("کاربر پیدا نشد.")
         except:
-            await update.message.reply_text("آیدی نامعتبر.")
+            await update.message.reply_text("آیدی نامعتبر یا خطا در حذف.")
         context.user_data.pop("admin_mode", None)
 
     elif mode == "reset_user":
@@ -178,7 +192,7 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             await update.message.reply_text(f"وضعیت کاربر {uid} ریست شد.")
         except:
-            await update.message.reply_text("آیدی نامعتبر.")
+            await update.message.reply_text("آیدی نامعتبر یا خطا در ریست.")
         context.user_data.pop("admin_mode", None)
 
 # ────────────────────────────────────────────────
@@ -409,35 +423,41 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("کاربر محدود شد")
 
 # ────────────────────────────────────────────────
-# اجرا
+# اجرا – ترتیب هندلرها مهم است
 # ────────────────────────────────────────────────
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # دستورات پایه
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("admin", admin_panel))
 
+    # منو
     app.add_handler(MessageHandler(
         filters.Regex("^(📸 ارسال عکس تاییدیه|🎫 ثبت تیکت|ℹ️ راهنما|ℹ راهنما)$"),
         handle_menu
     ))
 
+    # عکس
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
+    # ثبت تیکت
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.Regex("^(📸 ارسال عکس تاییدیه|ℹ️ راهنما|ℹ راهنما)$"),
         ticket_handler
     ))
 
-    # هندلر گروه ادمین (اول اضافه شده تا reply رو بگیره)
+    # پیام‌های گروه ادمین (اول اضافه شده تا reply به تیکت گرفته شود)
     app.add_handler(MessageHandler(
         filters.Chat(chat_id=ADMIN_GROUP_ID) & filters.TEXT & ~filters.COMMAND,
         handle_group_reply
     ))
 
+    # دکمه‌های inline
     app.add_handler(CallbackQueryHandler(button))
 
+    # پنل رئیس (آخر اضافه شود)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text_handler))
 
