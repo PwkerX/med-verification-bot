@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 from telegram import (
@@ -70,9 +71,8 @@ def get_admin_panel():
     return InlineKeyboardMarkup(keyboard)
 
 # ────────────────────────────────────────────────
-# تمام توابع (قبل از main تعریف شده‌اند)
+# شروع
 # ────────────────────────────────────────────────
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
@@ -97,6 +97,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
 
+# ────────────────────────────────────────────────
+# راهنما
+# ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "ℹ️ راهنما\n\n"
@@ -107,6 +110,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
 
+# ────────────────────────────────────────────────
+# دکمه‌های منو
+# ────────────────────────────────────────────────
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
@@ -122,6 +128,9 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ["ℹ️ راهنما", "ℹ راهنما"]:
         await cmd_help(update, context)
 
+# ────────────────────────────────────────────────
+# دریافت عکس
+# ────────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
@@ -170,6 +179,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("عکس دریافت شد. منتظر بررسی باشید.", reply_markup=MAIN_MENU)
 
+# ────────────────────────────────────────────────
+# ثبت تیکت
+# ────────────────────────────────────────────────
 async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_ticket"):
         return
@@ -206,6 +218,9 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تیکت ثبت شد. منتظر پاسخ باشید.", reply_markup=MAIN_MENU)
     context.user_data.pop("awaiting_ticket", None)
 
+# ────────────────────────────────────────────────
+# پاسخ‌دهی با Reply در گروه + دکمه‌های بستن و اسپم
+# ────────────────────────────────────────────────
 async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
@@ -246,6 +261,9 @@ async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         return
 
+# ────────────────────────────────────────────────
+# دکمه‌های inline (تایید، رد، بستن، اسپم)
+# ────────────────────────────────────────────────
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -301,7 +319,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("کاربر محدود شد")
 
 # ────────────────────────────────────────────────
-# اجرا (آخرین بخش کد)
+# پنل رئیس ربات (/admin)
+# ────────────────────────────────────────────────
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ دسترسی ندارید.")
+        return
+
+    await update.message.reply_text(
+        "👑 پنل مدیریتی رئیس ربات",
+        reply_markup=get_admin_panel()
+    )
+
+# ────────────────────────────────────────────────
+# اجرا
 # ────────────────────────────────────────────────
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
