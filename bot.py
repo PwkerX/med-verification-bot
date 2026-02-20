@@ -8,6 +8,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     CommandHandler,
+    ConversationHandler,
     filters,
     ContextTypes,
 )
@@ -249,7 +250,7 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data.pop("admin_mode", None)
 
 # ────────────────────────────────────────────────
-# راهنما (بدون محدودیت زمانی)
+# راهنما
 # ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -289,7 +290,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_help(update, context)
 
 # ────────────────────────────────────────────────
-# دریافت عکس (بدون چک زمان)
+# دریافت عکس
 # ────────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -397,8 +398,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text("❌ رد شد – ۲۴ ساعت محرومیت")
 
+    elif action == "reply_ticket":
+        await query.edit_message_text(query.message.text + "\n\n📝 منتظر پاسخ ادمین...")
+        context.user_data["replying_to_user"] = user_id
+        context.user_data["replying_message_id"] = query.message.message_id
+        await context.bot.send_message(
+            query.from_user.id,
+            "لطفاً متن پاسخ به تیکت رو بنویس و ارسال کن 😊"
+        )
+        return "WAITING_REPLY"
+
 # ────────────────────────────────────────────────
-# دریافت تیکت
+# دریافت تیکت (با دکمه پاسخ)
 # ────────────────────────────────────────────────
 async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_ticket"):
@@ -411,6 +422,8 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("لطفاً چیزی بنویس 😅", reply_markup=MAIN_MENU)
         return
 
+    keyboard = [[InlineKeyboardButton("📩 پاسخ بده", callback_data=f"reply_ticket_{user.id}")]]
+
     admin_msg = (
         f"🎫 تیکت جدید\n\n"
         f"نام: {user.full_name}\n"
@@ -419,7 +432,9 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"متن:\n{text}"
     )
 
-    await context.bot.send_message(ADMIN_GROUP_ID, admin_msg, parse_mode="HTML")
+    sent_msg = await context.bot.send_message(
+        ADMIN_GROUP_ID, admin_msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
     await update.message.reply_text(
         "✅ تیکت ثبت شد!\nبه‌زودی جواب می‌دن. ممنون از صبرت 💙",
@@ -429,50 +444,43 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_ticket", None)
 
 # ────────────────────────────────────────────────
-# پاسخ ادمین به تیکت (Reply در گروه)
+# دریافت متن پاسخ از ادمین (حالت مکالمه)
 # ────────────────────────────────────────────────
-async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-    if not message.reply_to_message:
-        return
+async def receive_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_text = update.message.text.strip()
+    user_id = context.user_data.get("replying_to_user")
+    message_id = context.user_data.get("replying_message_id")
 
-    replied = message.reply_to_message
-    if not replied.text or "تیکت جدید" not in replied.text:
-        return
-
-    user_id = None
-    for line in replied.text.split("\n"):
-        if "آیدی:" in line or "🆔" in line:
-            try:
-                part = line.split(":", 1)[1].strip()
-                part = part.replace("<code>", "").replace("</code>", "")
-                user_id = int(part)
-                break
-            except:
-                pass
-
-    if not user_id:
-        await message.reply_text("⚠️ آیدی دانشجو پیدا نشد", quote=True)
-        return
-
-    reply_text = message.text.strip()
-    if not reply_text:
-        await message.reply_text("متن پاسخ خالیه!", quote=True)
-        return
+    if not user_id or not reply_text:
+        await update.message.reply_text("⚠️ مشکلی پیش اومد. دوباره امتحان کن.")
+        return ConversationHandler.END
 
     try:
         await context.bot.send_message(
             user_id,
-            "📩 پاسخ ادمین به تیکت شما:\n\n"
-            f"{reply_text}\n\n"
-            "───────────────────\n"
-            "اگر نیاز به ادامه گفتگو داری، دوباره تیکت بزن 🎫"
+            f"📩 پاسخ ادمین به تیکت شما:\n\n{reply_text}\n\n───────────────────\nاگر نیاز به ادامه داری، دوباره تیکت بزن 🎫"
         )
-        await message.reply_text(f"✅ پاسخ برای {user_id} ارسال شد", quote=True)
+        await context.bot.edit_message_text(
+            chat_id=ADMIN_GROUP_ID,
+            message_id=message_id,
+            text=await context.bot.get_message(ADMIN_GROUP_ID, message_id).text + "\n\n✅ پاسخ داده شد"
+        )
+        await update.message.reply_text("✅ پاسخ ارسال شد.")
     except Exception as e:
-        await message.reply_text(f"❌ خطا: {str(e)}", quote=True)
+        await update.message.reply_text(f"❌ خطا: {str(e)}")
+
+    context.user_data.pop("replying_to_user", None)
+    context.user_data.pop("replying_message_id", None)
+    return ConversationHandler.END
+
+# ────────────────────────────────────────────────
+# لغو پاسخ
+# ────────────────────────────────────────────────
+async def cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("replying_to_user", None)
+    context.user_data.pop("replying_message_id", None)
+    await update.message.reply_text("پاسخ‌دهی لغو شد.")
+    return ConversationHandler.END
 
 # ────────────────────────────────────────────────
 # اجرا
@@ -496,17 +504,20 @@ def main():
         ticket_handler
     ))
 
-    app.add_handler(MessageHandler(
-        filters.Chat(ADMIN_GROUP_ID) & filters.TEXT & ~filters.COMMAND,
-        handle_admin_reply
-    ))
+    # جدید: مکالمه برای پاسخ تیکت
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(button, pattern="^reply_ticket_")],
+        states={"WAITING_REPLY": [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reply)]},
+        fallbacks=[CommandHandler("cancel", cancel_reply)]
+    )
+    app.add_handler(conv_handler)
 
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
+    app.add_handler(CallbackQueryHandler(button))  # برای approve/deny
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text_handler))
 
     print("ربات شروع به کار کرد...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
