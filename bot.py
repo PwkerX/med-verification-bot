@@ -15,7 +15,7 @@ from telegram.ext import (
 # ────────────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"
-ADMIN_GROUP_ID = -1003703559282                 # ← اینجا را درست کن
+ADMIN_GROUP_ID = -1003703559282                 # ← حتماً درست وارد کن
 
 TIME_LIMIT_MINUTES = 15
 REJECT_BAN_HOURS = 24
@@ -48,7 +48,7 @@ conn.commit()
 # منوی اصلی
 # ────────────────────────────────────────────────
 MAIN_MENU = ReplyKeyboardMarkup(
-    keyboard=[
+    [
         [KeyboardButton("📸 ارسال عکس تاییدیه")],
         [KeyboardButton("🎫 ثبت تیکت")],
         [KeyboardButton("ℹ️ راهنما")]
@@ -65,12 +65,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now()
 
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
-    record = cursor.fetchone()
-
-    if not record:
+    if not cursor.fetchone():
         cursor.execute("""
-        INSERT INTO users
-        (user_id, full_name, username, joined_at)
+        INSERT INTO users (user_id, full_name, username, joined_at)
         VALUES (?, ?, ?, ?)
         """, (user.id, user.full_name, user.username, now.isoformat()))
         conn.commit()
@@ -84,11 +81,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "عکس رو بفرست ↓"
     )
 
-    await update.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=MAIN_MENU
-    )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
 
 # ────────────────────────────────────────────────
 # راهنما
@@ -96,11 +89,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "ℹ️ <b>راهنما</b>\n\n"
-        f"📸 عکس چاپ انتخاب واحد رو می‌تونی تا {TIME_LIMIT_MINUTES} دقیقه بعد از استارت فرستادن\n"
-        "فقط یک بار می‌تونی ارسال کنی\n\n"
+        f"📸 عکس چاپ انتخاب واحد رو تا {TIME_LIMIT_MINUTES} دقیقه بعد از استارت می‌تونی بفرستی\n"
+        "فقط یک بار فرصت ارسال داری\n\n"
         "🎫 هر سوال یا مشکلی داشتی تیکت بزن\n"
         "ادمین‌ها سریع جواب می‌دن\n\n"
-        "❌ اگه عکست رد بشه ۲۴ ساعت نمی‌تونی دوباره بفرستی\n\n"
+        "❌ اگر عکست رد بشه ۲۴ ساعت نمی‌تونی دوباره ارسال کنی\n\n"
         "موفق باشی 🌟"
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
@@ -119,7 +112,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    elif text == "🎫 ثبت تیکت":
+    if text == "🎫 ثبت تیکت":
         await update.message.reply_text(
             "لطفاً مشکل یا سوالت رو واضح بنویس و ارسال کن\n"
             "ادمین‌ها زود جواب می‌دن 😊",
@@ -128,9 +121,8 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_ticket"] = True
         return
 
-    elif text in ["ℹ️ راهنما", "ℹ راهنما"]:
+    if text in ["ℹ️ راهنما", "ℹ راهنما"]:
         await cmd_help(update, context)
-        return
 
 # ────────────────────────────────────────────────
 # دریافت عکس
@@ -148,7 +140,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status, joined_at_str, submitted_at, reject_until_str = row[3], row[4], row[5], row[6]
 
-    # محرومیت ۲۴ ساعته
     if reject_until_str:
         reject_until = datetime.fromisoformat(reject_until_str)
         if now < reject_until:
@@ -161,7 +152,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # مهلت زمانی
     joined_at = datetime.fromisoformat(joined_at_str)
     if (now - joined_at).total_seconds() > TIME_LIMIT_MINUTES * 60:
         await update.message.reply_text(
@@ -170,7 +160,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # قبلاً ارسال کرده؟
     if submitted_at is not None:
         await update.message.reply_text(
             "⚠️ قبلاً عکس فرستادی و در حال بررسیه.\nلطفاً صبر کن یا تیکت بزن",
@@ -178,11 +167,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # فوروارد به ادمین‌ها
     forwarded = await context.bot.forward_message(
-        ADMIN_GROUP_ID,
-        update.effective_chat.id,
-        update.message.message_id
+        ADMIN_GROUP_ID, update.effective_chat.id, update.message.message_id
     )
 
     keyboard = [[
@@ -217,7 +203,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ────────────────────────────────────────────────
-# تایید / رد
+# تایید / رد عکس
 # ────────────────────────────────────────────────
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -234,15 +220,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "موفق باشی ستاره! 🚀",
             disable_web_page_preview=True
         )
-
         cursor.execute("UPDATE users SET status = 'approved', reject_until = NULL WHERE user_id = ?", (user_id,))
         conn.commit()
-
         await query.edit_message_text("✅ تایید شد – لینک ارسال گردید")
 
     elif action == "deny":
         ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
-
         cursor.execute(
             "UPDATE users SET status = 'rejected', reject_until = ? WHERE user_id = ?",
             (ban_until, user_id)
@@ -256,11 +239,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "مطمئن شو عکس واضح و درست باشه 😉",
             reply_markup=MAIN_MENU
         )
-
         await query.edit_message_text("❌ رد شد – ۲۴ ساعت محرومیت")
 
 # ────────────────────────────────────────────────
-# دریافت تیکت
+# دریافت تیکت از دانشجو
 # ────────────────────────────────────────────────
 async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_ticket"):
@@ -291,6 +273,61 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_ticket", None)
 
 # ────────────────────────────────────────────────
+# پاسخ ادمین به تیکت (Reply در گروه ادمین)
+# ────────────────────────────────────────────────
+async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
+
+    if not message.reply_to_message:
+        return
+
+    replied = message.reply_to_message
+    if not replied.text or "تیکت جدید" not in replied.text:
+        return
+
+    # استخراج user_id
+    user_id = None
+    for line in replied.text.split("\n"):
+        if "آیدی:" in line or "🆔" in line:
+            try:
+                part = line.split(":", 1)[1].strip()
+                part = part.replace("<code>", "").replace("</code>", "")
+                user_id = int(part)
+                break
+            except:
+                pass
+
+    if not user_id:
+        await message.reply_text("⚠️ آیدی دانشجو پیدا نشد", quote=True)
+        return
+
+    reply_text = message.text.strip()
+    if not reply_text:
+        await message.reply_text("متن پاسخ خالیه!", quote=True)
+        return
+
+    try:
+        await context.bot.send_message(
+            user_id,
+            "📩 پاسخ ادمین به تیکت شما:\n\n"
+            f"{reply_text}\n\n"
+            "───────────────────\n"
+            "اگر نیاز به ادامه گفتگو داری، دوباره تیکت بزن 🎫"
+        )
+
+        await message.reply_text(f"✅ پاسخ برای {user_id} ارسال شد", quote=True)
+
+    except Exception as e:
+        await message.reply_text(
+            f"❌ خطا در ارسال پاسخ:\n{str(e)}\n\n"
+            "ممکن است دانشجو ربات رو بلاک کرده یا /start نزده باشه.",
+            quote=True
+        )
+
+# ────────────────────────────────────────────────
 # اجرا
 # ────────────────────────────────────────────────
 def main():
@@ -311,9 +348,14 @@ def main():
         ticket_handler
     ))
 
+    app.add_handler(MessageHandler(
+        filters.Chat(ADMIN_GROUP_ID) & filters.TEXT & ~filters.COMMAND,
+        handle_admin_reply
+    ))
+
     app.add_handler(CallbackQueryHandler(button))
 
-    print("ربات شروع شد ...")
+    print("ربات شروع به کار کرد...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
