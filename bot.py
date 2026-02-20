@@ -360,56 +360,70 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ────────────────────────────────────────────────
-# تایید / رد عکس
+# تایید / رد عکس و تیکت
 # ────────────────────────────────────────────────
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    action, uid_str = query.data.split("_")
-    user_id = int(uid_str)
+    data = query.data
+    action, user_id_str = data.split("_", 1)
+    user_id = int(user_id_str)
 
-    if action == "approve":
-        await context.bot.send_message(
-            user_id,
-            f"🎉 تبریک! انتخاب واحدت تایید شد 🌟\n\n"
-            f"لینک گروه اصلی:\n{MAIN_GROUP_LINK}\n\n"
-            "موفق باشی ستاره! 🚀",
-            disable_web_page_preview=True
-        )
-        cursor.execute("UPDATE users SET status = 'approved', reject_until = NULL WHERE user_id = ?", (user_id,))
-        conn.commit()
-        await query.edit_message_text("✅ تایید شد – لینک ارسال گردید")
+    if action in ["approve", "deny"]:
+        if action == "approve":
+            await context.bot.send_message(
+                user_id,
+                f"🎉 تبریک! انتخاب واحدت تایید شد 🌟\n\n"
+                f"لینک گروه اصلی:\n{MAIN_GROUP_LINK}\n\n"
+                "موفق باشی ستاره! 🚀",
+                disable_web_page_preview=True
+            )
+            cursor.execute("UPDATE users SET status = 'approved', reject_until = NULL WHERE user_id = ?", (user_id,))
+            conn.commit()
+            await query.edit_message_text("✅ تایید شد – لینک ارسال گردید")
 
-    elif action == "deny":
-        ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
-        cursor.execute(
-            "UPDATE users SET status = 'rejected', reject_until = ? WHERE user_id = ?",
-            (ban_until, user_id)
-        )
-        conn.commit()
+        elif action == "deny":
+            ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
+            cursor.execute(
+                "UPDATE users SET status = 'rejected', reject_until = ? WHERE user_id = ?",
+                (ban_until, user_id)
+            )
+            conn.commit()
 
-        await context.bot.send_message(
-            user_id,
-            f"😔 این بار تایید نشد...\n\n"
-            f"۲۴ ساعت دیگه دوباره امتحان کن.\n"
-            "مطمئن شو عکس واضح و درست باشه 😉",
-            reply_markup=MAIN_MENU
-        )
-        await query.edit_message_text("❌ رد شد – ۲۴ ساعت محرومیت")
+            await context.bot.send_message(
+                user_id,
+                f"😔 این بار تایید نشد...\n\n"
+                f"۲۴ ساعت دیگه دوباره امتحان کن.\n"
+                "مطمئن شو عکس واضح و درست باشه 😉",
+                reply_markup=MAIN_MENU
+            )
+            await query.edit_message_text("❌ رد شد – ۲۴ ساعت محرومیت")
 
     elif action == "reply_ticket":
-        await query.edit_message_text(query.message.text + "\n\n📝 منتظر پاسخ ادمین...")
+        # چک ادمین بودن (اختیاری، اما بهینه)
+        if query.from_user.id != ADMIN_ID:  # یا چک عضویت در گروه ادمین
+            await query.answer("فقط ادمین‌ها می‌تونن پاسخ بدن.", show_alert=True)
+            return
+
         context.user_data["replying_to_user"] = user_id
         context.user_data["replying_message_id"] = query.message.message_id
+        context.user_data["replying_chat_id"] = query.message.chat_id
+
+        await query.edit_message_text(query.message.text + "\n\n📝 در حال پاسخ‌دهی...")
+
         await context.bot.send_message(
-            query.from_user.id,
-            "لطفاً متن پاسخ به تیکت رو بنویس و ارسال کن 😊"
+            chat_id=query.from_user.id,
+            text="لطفاً متن پاسخ به تیکت رو بنویس و ارسال کن. برای لغو /cancel بزن."
         )
         return "WAITING_REPLY"
 
+    elif action == "close_ticket":
+        await query.edit_message_text(query.message.text + "\n\n❌ تیکت بسته شد.")
+        await query.answer("تیکت بسته شد.")
+
 # ────────────────────────────────────────────────
-# دریافت تیکت (با دکمه پاسخ)
+# دریافت تیکت (با دکمه‌های پاسخ و بستن)
 # ────────────────────────────────────────────────
 async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_ticket"):
@@ -422,7 +436,12 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("لطفاً چیزی بنویس 😅", reply_markup=MAIN_MENU)
         return
 
-    keyboard = [[InlineKeyboardButton("📩 پاسخ بده", callback_data=f"reply_ticket_{user.id}")]]
+    keyboard = [
+        [
+            InlineKeyboardButton("📩 پاسخ بده", callback_data=f"reply_ticket_{user.id}"),
+            InlineKeyboardButton("❌ بستن تیکت", callback_data=f"close_ticket_{user.id}")
+        ]
+    ]
 
     admin_msg = (
         f"🎫 تیکت جدید\n\n"
@@ -432,8 +451,11 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"متن:\n{text}"
     )
 
-    sent_msg = await context.bot.send_message(
-        ADMIN_GROUP_ID, admin_msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(
+        ADMIN_GROUP_ID,
+        admin_msg,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
     await update.message.reply_text(
@@ -444,14 +466,15 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_ticket", None)
 
 # ────────────────────────────────────────────────
-# دریافت متن پاسخ از ادمین (حالت مکالمه)
+# دریافت متن پاسخ از ادمین
 # ────────────────────────────────────────────────
 async def receive_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_text = update.message.text.strip()
     user_id = context.user_data.get("replying_to_user")
     message_id = context.user_data.get("replying_message_id")
+    chat_id = context.user_data.get("replying_chat_id")
 
-    if not user_id or not reply_text:
+    if not user_id or not message_id or not reply_text:
         await update.message.reply_text("⚠️ مشکلی پیش اومد. دوباره امتحان کن.")
         return ConversationHandler.END
 
@@ -460,25 +483,25 @@ async def receive_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_id,
             f"📩 پاسخ ادمین به تیکت شما:\n\n{reply_text}\n\n───────────────────\nاگر نیاز به ادامه داری، دوباره تیکت بزن 🎫"
         )
+
         await context.bot.edit_message_text(
-            chat_id=ADMIN_GROUP_ID,
+            chat_id=chat_id,
             message_id=message_id,
-            text=await context.bot.get_message(ADMIN_GROUP_ID, message_id).text + "\n\n✅ پاسخ داده شد"
+            text= (await context.bot.get_chat(chat_id).get_message(message_id)).text + "\n\n✅ پاسخ داده شد"
         )
+
         await update.message.reply_text("✅ پاسخ ارسال شد.")
     except Exception as e:
-        await update.message.reply_text(f"❌ خطا: {str(e)}")
+        await update.message.reply_text(f"❌ خطا در ارسال: {str(e)}")
 
-    context.user_data.pop("replying_to_user", None)
-    context.user_data.pop("replying_message_id", None)
+    context.user_data.clear()
     return ConversationHandler.END
 
 # ────────────────────────────────────────────────
 # لغو پاسخ
 # ────────────────────────────────────────────────
 async def cancel_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.pop("replying_to_user", None)
-    context.user_data.pop("replying_message_id", None)
+    context.user_data.clear()
     await update.message.reply_text("پاسخ‌دهی لغو شد.")
     return ConversationHandler.END
 
@@ -504,16 +527,20 @@ def main():
         ticket_handler
     ))
 
-    # جدید: مکالمه برای پاسخ تیکت
+    # مکالمه برای پاسخ تیکت
     conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button, pattern="^reply_ticket_")],
-        states={"WAITING_REPLY": [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reply)]},
+        entry_points=[CallbackQueryHandler(button, pattern="^(reply_ticket|close_ticket)_")],
+        states={
+            "WAITING_REPLY": [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reply)]
+        },
         fallbacks=[CommandHandler("cancel", cancel_reply)]
     )
     app.add_handler(conv_handler)
 
+    # approve/deny جدا
+    app.add_handler(CallbackQueryHandler(button, pattern="^(approve|deny)_"))
+
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
-    app.add_handler(CallbackQueryHandler(button))  # برای approve/deny
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text_handler))
 
     print("ربات شروع به کار کرد...")
