@@ -26,7 +26,7 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"
 ADMIN_GROUP_ID = -1003703559282  # حتماً چک کن درست باشه
-ADMIN_ID = 123456789             # ایدی رئیس ربات
+ADMIN_ID = 7940304990             # ایدی رئیس ربات
 
 REJECT_BAN_HOURS = 24
 
