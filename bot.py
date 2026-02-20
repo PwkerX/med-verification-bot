@@ -24,9 +24,10 @@ from telegram.ext import (
 # تنظیمات اصلی
 # ────────────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
-ADMIN_GROUP_ID = -1003703559282          # گروه ادمین‌ها (بررسی عکس و تیکت)
-MAIN_STUDENTS_GROUP_ID = -1003754380100  # گروه اصلی دانشجویان (ورود نهایی)
-ADMIN_ID = 7940304990                    # ایدی رئیس ربات
+MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"  # لینک ثابت گروه اصلی (fallback)
+ADMIN_GROUP_ID = -1003703559282                     # گروه ادمین‌ها
+MAIN_STUDENTS_GROUP_ID = -1003754380100             # گروه اصلی دانشجویان
+ADMIN_ID = 7940304990                               # ایدی رئیس
 REJECT_BAN_HOURS = 24
 
 logging.basicConfig(
@@ -81,9 +82,8 @@ def get_admin_panel():
     return InlineKeyboardMarkup(keyboard)
 
 # ────────────────────────────────────────────────
-# تمام توابع (قبل از main تعریف شده‌اند)
+# شروع
 # ────────────────────────────────────────────────
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
@@ -106,6 +106,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
 
+# ────────────────────────────────────────────────
+# راهنما
+# ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "ℹ️ راهنما\n\n"
@@ -116,6 +119,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
 
+# ────────────────────────────────────────────────
+# دکمه‌های منو
+# ────────────────────────────────────────────────
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
@@ -131,6 +137,9 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ["ℹ️ راهنما", "ℹ راهنما"]:
         await cmd_help(update, context)
 
+# ────────────────────────────────────────────────
+# دریافت عکس
+# ────────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
@@ -179,6 +188,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("عکس دریافت شد. منتظر بررسی باشید.", reply_markup=MAIN_MENU)
 
+# ────────────────────────────────────────────────
+# ثبت تیکت
+# ────────────────────────────────────────────────
 async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_ticket"):
         return
@@ -215,6 +227,9 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("تیکت ثبت شد. منتظر پاسخ باشید.", reply_markup=MAIN_MENU)
     context.user_data.pop("awaiting_ticket", None)
 
+# ────────────────────────────────────────────────
+# پاسخ‌دهی با Reply در گروه ادمین‌ها
+# ────────────────────────────────────────────────
 async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
@@ -255,6 +270,9 @@ async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         return
 
+# ────────────────────────────────────────────────
+# دکمه‌های inline (تایید، رد، بستن، اسپم)
+# ────────────────────────────────────────────────
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -267,18 +285,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action, uid_str = data.split("_", 1)
     user_id = int(uid_str)
 
+    # برای دسترسی به اطلاعات کاربر (نام و غیره)
+    cursor.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    full_name = row[0] if row else "دانشجو"
+
     if action == "approve":
         try:
             invite_link = await context.bot.create_chat_invite_link(
                 chat_id=-1003754380100,  # گروه اصلی دانشجویان
-                name=f"دعوت {user.full_name} - {datetime.now().strftime('%Y-%m-%d')}",
+                name=f"دعوت {full_name} - {datetime.now().strftime('%Y-%m-%d')}",
                 member_limit=1,
                 expire_date=datetime.now() + timedelta(days=7)
             )
             link = invite_link.invite_link
         except Exception as e:
             logging.error(f"خطا در ساخت لینک دعوت: {str(e)}")
-            link = MAIN_GROUP_LINK
+            link = MAIN_GROUP_LINK  # fallback
 
         await context.bot.send_message(
             user_id,
