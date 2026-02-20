@@ -2,208 +2,320 @@ import os
 import sqlite3
 import logging
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, filters, ContextTypes, CommandHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    CallbackQueryHandler,
+    CommandHandler,
+    filters,
+    ContextTypes,
+)
 
-# -----------------------
-# توکن ربات
-# -----------------------
+# ────────────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
+MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"
+ADMIN_GROUP_ID = -1003703559282                 # ← اینجا را درست کن
 
-# -----------------------
-# تنظیمات گروه و لینک
-# -----------------------
-ADMIN_GROUP_ID = -1003703559282  # 👈 بعداً با ID گروه ادمین‌ها جایگذاری کن
-MAIN_GROUP_LINK = "https://t.me/+xmOYLM5N0z4wY2E0"  # 👈 لینک گروه اصلی
+TIME_LIMIT_MINUTES = 15
+REJECT_BAN_HOURS = 24
 
-# محدودیت زمان ارسال عکس
-TIME_LIMIT = 15  # دقیقه
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
-# -----------------------
-# Logging
-# -----------------------
-logging.basicConfig(level=logging.INFO)
-
-# -----------------------
-# Database setup
-# -----------------------
-conn = sqlite3.connect("database.db", check_same_thread=False)
+# ────────────────────────────────────────────────
+# دیتابیس
+# ────────────────────────────────────────────────
+conn = sqlite3.connect("students.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    full_name TEXT,
-    status TEXT,
-    joined_at TEXT,
-    submitted INTEGER,
-    reject_until TEXT
+    user_id          INTEGER PRIMARY KEY,
+    full_name        TEXT,
+    username         TEXT,
+    status           TEXT DEFAULT 'joined',
+    joined_at        TEXT,
+    submitted_at     TEXT,
+    reject_until     TEXT
 )
 """)
 conn.commit()
 
-# -----------------------
-# Start command
-# -----------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
-    data = cursor.fetchone()
+# ────────────────────────────────────────────────
+# منوی اصلی
+# ────────────────────────────────────────────────
+MAIN_MENU = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("📸 ارسال عکس تاییدیه")],
+        [KeyboardButton("🎫 ثبت تیکت")],
+        [KeyboardButton("ℹ️ راهنما")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
 
-    if not data:
+# ────────────────────────────────────────────────
+# شروع
+# ────────────────────────────────────────────────
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    now = datetime.now()
+
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+    record = cursor.fetchone()
+
+    if not record:
         cursor.execute("""
-        INSERT OR REPLACE INTO users 
-        (user_id, full_name, status, joined_at, submitted, reject_until)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            user.id,
-            user.full_name or "نام نامشخص",
-            "joined",
-            datetime.now().isoformat(),
-            0,
-            None
-        ))
+        INSERT INTO users
+        (user_id, full_name, username, joined_at)
+        VALUES (?, ?, ?, ?)
+        """, (user.id, user.full_name, user.username, now.isoformat()))
         conn.commit()
 
+    text = (
+        f"سلام {user.first_name} 👋\n\n"
+        f"به ربات رسمی <b>ورودی بهمن</b> خوش اومدی 🎓✨\n\n"
+        f"📸 لطفاً <b>عکس چاپ انتخاب واحد</b> ترم جاری رو همین الان برام بفرست\n"
+        f"تا بعد از تایید، لینک گروه اصلی رو برات ارسال کنم 🚀\n\n"
+        f"⏰ فقط <b>{TIME_LIMIT_MINUTES}</b> دقیقه از همین الان فرصت داری!\n\n"
+        "عکس رو بفرست ↓"
+    )
+
     await update.message.reply_text(
-        f"👋 سلام {user.full_name} عزیز!\n\n"
-        "🎓 خوش آمدی!\n\n"
-        f"📌 لطفاً **عکس چاپ تاییدیه انتخاب واحدت** رو در همین چت ارسال کن.\n"
-        f"⏰ فرصت ارسال: {TIME_LIMIT} دقیقه\n"
-        "⚠ فقط یک بار می‌تونی ارسال کنی.\n\n"
-        "💡 پس از ارسال و تایید، لینک گروه اصلی برایت ارسال خواهد شد."
+        text,
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU
     )
 
-# -----------------------
-# Handle photo
-# -----------------------
+# ────────────────────────────────────────────────
+# راهنما
+# ────────────────────────────────────────────────
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "ℹ️ <b>راهنما</b>\n\n"
+        f"📸 عکس چاپ انتخاب واحد رو می‌تونی تا {TIME_LIMIT_MINUTES} دقیقه بعد از استارت فرستادن\n"
+        "فقط یک بار می‌تونی ارسال کنی\n\n"
+        "🎫 هر سوال یا مشکلی داشتی تیکت بزن\n"
+        "ادمین‌ها سریع جواب می‌دن\n\n"
+        "❌ اگه عکست رد بشه ۲۴ ساعت نمی‌تونی دوباره بفرستی\n\n"
+        "موفق باشی 🌟"
+    )
+    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
+
+# ────────────────────────────────────────────────
+# دکمه‌های منو
+# ────────────────────────────────────────────────
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "📸 ارسال عکس تاییدیه":
+        await update.message.reply_text(
+            f"عکس چاپ انتخاب واحد رو برام بفرست 📷\n"
+            f"⏳ فقط {TIME_LIMIT_MINUTES} دقیقه فرصت داری!",
+            reply_markup=MAIN_MENU
+        )
+        return
+
+    elif text == "🎫 ثبت تیکت":
+        await update.message.reply_text(
+            "لطفاً مشکل یا سوالت رو واضح بنویس و ارسال کن\n"
+            "ادمین‌ها زود جواب می‌دن 😊",
+            reply_markup=MAIN_MENU
+        )
+        context.user_data["awaiting_ticket"] = True
+        return
+
+    elif text in ["ℹ️ راهنما", "ℹ راهنما"]:
+        await cmd_help(update, context)
+        return
+
+# ────────────────────────────────────────────────
+# دریافت عکس
+# ────────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (user.id,))
-    data = cursor.fetchone()
-    if not data:
-        await update.message.reply_text("⚠ لطفاً ابتدا /start را بزنید.")
+    user = update.effective_user
+    now = datetime.now()
+
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await update.message.reply_text("اول /start رو بزن لطفاً 😊", reply_markup=MAIN_MENU)
         return
 
-    # بررسی رد قبلی
-    reject_until = data[5]
-    if reject_until and datetime.now() < datetime.fromisoformat(reject_until):
-        await update.message.reply_text("⛔ فعلاً اجازه ارسال ندارید. ۲۴ ساعت دیگر دوباره تلاش کنید 😅")
+    status, joined_at_str, submitted_at, reject_until_str = row[3], row[4], row[5], row[6]
+
+    # محرومیت ۲۴ ساعته
+    if reject_until_str:
+        reject_until = datetime.fromisoformat(reject_until_str)
+        if now < reject_until:
+            remaining = reject_until - now
+            h = remaining.seconds // 3600
+            m = (remaining.seconds % 3600) // 60
+            await update.message.reply_text(
+                f"⛔ تا {h} ساعت و {m} دقیقه دیگه نمی‌تونی عکس بفرستی.\nفردا دوباره امتحان کن",
+                reply_markup=MAIN_MENU
+            )
+            return
+
+    # مهلت زمانی
+    joined_at = datetime.fromisoformat(joined_at_str)
+    if (now - joined_at).total_seconds() > TIME_LIMIT_MINUTES * 60:
+        await update.message.reply_text(
+            f"⌛ مهلت {TIME_LIMIT_MINUTES} دقیقه‌ای تموم شد.\nفردا دوباره /start بزن",
+            reply_markup=MAIN_MENU
+        )
         return
 
-    # بررسی زمان محدود
-    joined_at = datetime.fromisoformat(data[3])
-    if datetime.now() - joined_at > timedelta(minutes=TIME_LIMIT):
-        await update.message.reply_text("⌛ زمان ارسال عکس شما تموم شد. ۲۴ ساعت دیگر دوباره تلاش کنید 🕒")
+    # قبلاً ارسال کرده؟
+    if submitted_at is not None:
+        await update.message.reply_text(
+            "⚠️ قبلاً عکس فرستادی و در حال بررسیه.\nلطفاً صبر کن یا تیکت بزن",
+            reply_markup=MAIN_MENU
+        )
         return
 
-    # بررسی ارسال قبلی
-    if data[4] == 1:
-        await update.message.reply_text("⚠ قبلاً ارسال کرده‌اید. لطفاً ۲۴ ساعت دیگر صبر کنید ⏳")
-        return
-
-    # فورارد عکس به گروه ادمین‌ها
+    # فوروارد به ادمین‌ها
     forwarded = await context.bot.forward_message(
-        chat_id=ADMIN_GROUP_ID,
-        from_chat_id=update.message.chat.id,
-        message_id=update.message.message_id
+        ADMIN_GROUP_ID,
+        update.effective_chat.id,
+        update.message.message_id
     )
 
-    # شمارش کاربران منتظر بررسی
-    cursor.execute("SELECT COUNT(*) FROM users WHERE submitted=1 AND status='joined'")
-    waiting_count = cursor.fetchone()[0]
-
-    # پیام اعلان به گروه ادمین‌ها
     keyboard = [[
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{user.id}"),
-        InlineKeyboardButton("❌ Deny", callback_data=f"deny_{user.id}")
+        InlineKeyboardButton("✅ تایید", callback_data=f"approve_{user.id}"),
+        InlineKeyboardButton("❌ رد", callback_data=f"deny_{user.id}")
     ]]
-    await context.bot.send_message(
-        chat_id=ADMIN_GROUP_ID,
-        text=f"📩 درخواست جدید وارد شد!\n"
-             f"👤 نام: {user.full_name}\n"
-             f"🆔 ID: {user.id}\n"
-             f"📸 عکس انتخاب واحد دریافت شد.\n"
-             f"🔔 تعداد کاربران منتظر بررسی: {waiting_count}\n"
-             f"✅ لطفاً Approve یا Deny بزنید.",
-        reply_to_message_id=forwarded.message_id,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+
+    caption = (
+        f"🆕 درخواست جدید\n\n"
+        f"نام: {user.full_name}\n"
+        f"آیدی: <code>{user.id}</code>\n"
+        f"یوزرنیم: @{user.username or 'ندارد'}"
     )
 
-    cursor.execute("UPDATE users SET submitted=1 WHERE user_id=?", (user.id,))
+    await context.bot.send_message(
+        ADMIN_GROUP_ID,
+        caption,
+        reply_to_message_id=forwarded.message_id,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
+
+    cursor.execute(
+        "UPDATE users SET submitted_at = ?, status = 'submitted' WHERE user_id = ?",
+        (now.isoformat(), user.id)
+    )
     conn.commit()
 
-    # پیام دلنشین به کاربر
     await update.message.reply_text(
-        "📨 عکس شما دریافت شد! لطفاً کمی صبر کنید، ادمین‌ها درخواستت رو بررسی می‌کنند 👀"
+        "📤 عکس دریافت شد!\nلطفاً کمی صبر کن تا بررسی بشه 🚀",
+        reply_markup=MAIN_MENU
     )
 
-# -----------------------
-# Approve / Deny
-# -----------------------
+# ────────────────────────────────────────────────
+# تایید / رد
+# ────────────────────────────────────────────────
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    action, user_id = query.data.split("_")
-    user_id = int(user_id)
+    action, uid_str = query.data.split("_")
+    user_id = int(uid_str)
 
     if action == "approve":
-        # پیام خصوصی تشویقی + لینک گروه اصلی
         await context.bot.send_message(
-            chat_id=user_id,
-            text=f"🎉 تبریک {user_id}! تایید شدی 😎\n"
-                 f"📌 لینک گروه اصلی:\n{MAIN_GROUP_LINK}\n\n"
-                 f"💡 بعد از ورود به گروه اصلی، می‌تونی با دوستانت در ارتباط باشی."
+            user_id,
+            f"🎉 تبریک! انتخاب واحدت تایید شد 🌟\n\n"
+            f"لینک گروه اصلی:\n{MAIN_GROUP_LINK}\n\n"
+            "موفق باشی ستاره! 🚀",
+            disable_web_page_preview=True
         )
 
-        cursor.execute("UPDATE users SET status='approved' WHERE user_id=?", (user_id,))
+        cursor.execute("UPDATE users SET status = 'approved', reject_until = NULL WHERE user_id = ?", (user_id,))
         conn.commit()
 
-        # لاگ ورود در گروه ادمین‌ها
-        await context.bot.send_message(
-            ADMIN_GROUP_ID,
-            f"✅ {user_id} تایید شد و لینک گروه اصلی برایش ارسال شد."
-        )
+        await query.edit_message_text("✅ تایید شد – لینک ارسال گردید")
 
     elif action == "deny":
-        reject_time = datetime.now() + timedelta(hours=24)
-        cursor.execute("UPDATE users SET status='rejected', reject_until=? WHERE user_id=?",
-                       (reject_time.isoformat(), user_id))
+        ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
+
+        cursor.execute(
+            "UPDATE users SET status = 'rejected', reject_until = ? WHERE user_id = ?",
+            (ban_until, user_id)
+        )
         conn.commit()
 
-        # پیام خصوصی انگیزشی
         await context.bot.send_message(
-            chat_id=user_id,
-            text="❌ متاسفم، این بار رد شدی 😅\n"
-                 "💪 ۲۴ ساعت دیگر دوباره تلاش کن، موفق می‌شی!"
+            user_id,
+            f"😔 این بار تایید نشد...\n\n"
+            f"۲۴ ساعت دیگه دوباره امتحان کن.\n"
+            "مطمئن شو عکس واضح و درست باشه 😉",
+            reply_markup=MAIN_MENU
         )
 
-        await context.bot.send_message(
-            ADMIN_GROUP_ID,
-            f"❌ {user_id} رد شد. تا ۲۴ ساعت امکان ارسال دوباره ندارد."
-        )
+        await query.edit_message_text("❌ رد شد – ۲۴ ساعت محرومیت")
 
-    # حذف پیام دکمه بعد از تصمیم
-    await context.bot.delete_message(ADMIN_GROUP_ID, query.message.message_id)
+# ────────────────────────────────────────────────
+# دریافت تیکت
+# ────────────────────────────────────────────────
+async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_ticket"):
+        return
 
-# -----------------------
-# Delete non-photo messages
-# -----------------------
-async def delete_non_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.photo:
-        await update.message.delete()
+    user = update.effective_user
+    text = update.message.text.strip()
 
-# -----------------------
-# اجرای ربات
-# -----------------------
-app = ApplicationBuilder().token(TOKEN).build()
+    if not text:
+        await update.message.reply_text("لطفاً چیزی بنویس 😅", reply_markup=MAIN_MENU)
+        return
 
-# Handlerها
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-app.add_handler(MessageHandler(~filters.PHOTO, delete_non_photo))
-app.add_handler(CallbackQueryHandler(button))
+    admin_msg = (
+        f"🎫 تیکت جدید\n\n"
+        f"نام: {user.full_name}\n"
+        f"آیدی: <code>{user.id}</code>\n"
+        f"یوزرنیم: @{user.username or 'ندارد'}\n\n"
+        f"متن:\n{text}"
+    )
 
-# اجرای Polling
-app.run_polling()
+    await context.bot.send_message(ADMIN_GROUP_ID, admin_msg, parse_mode="HTML")
+
+    await update.message.reply_text(
+        "✅ تیکت ثبت شد!\nبه‌زودی جواب می‌دن. ممنون از صبرت 💙",
+        reply_markup=MAIN_MENU
+    )
+
+    context.user_data.pop("awaiting_ticket", None)
+
+# ────────────────────────────────────────────────
+# اجرا
+# ────────────────────────────────────────────────
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", cmd_help))
+
+    app.add_handler(MessageHandler(
+        filters.Regex(r"^(📸 ارسال عکس تاییدیه|🎫 ثبت تیکت|ℹ️ راهنما|ℹ راهنما)$"),
+        handle_menu
+    ))
+
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^(📸 ارسال عکس تاییدیه|🎫 ثبت تیکت|ℹ️ راهنما|ℹ راهنما)$"),
+        ticket_handler
+    ))
+
+    app.add_handler(CallbackQueryHandler(button))
+
+    print("ربات شروع شد ...")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
