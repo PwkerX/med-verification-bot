@@ -1,9 +1,7 @@
 import os
-import sqlite3
 import logging
-import re
 from datetime import datetime, timedelta
-
+from pymongo import MongoClient
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -25,34 +23,21 @@ from telegram.ext import (
 # ────────────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
 MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"
-ADMIN_GROUP_ID = -1003703559282  # حتماً چک کن درست باشه
-ADMIN_ID = 7940304990             # ایدی رئیس ربات
-
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "-1003703559282"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7940304990"))
 REJECT_BAN_HOURS = 24
+
+MONGODB_URI = os.getenv("MONGODB_URI")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG  # برای دیباگ روشن گذاشتم، بعداً INFO کن
+    level=logging.INFO
 )
 
-# ────────────────────────────────────────────────
-# دیتابیس
-# ────────────────────────────────────────────────
-conn = sqlite3.connect("students.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id          INTEGER PRIMARY KEY,
-    full_name        TEXT,
-    username         TEXT,
-    status           TEXT DEFAULT 'joined',
-    joined_at        TEXT,
-    submitted_at     TEXT,
-    reject_until     TEXT
-)
-""")
-conn.commit()
+# اتصال به MongoDB
+client = MongoClient(MONGODB_URI)
+db = client["medical_students"]
+users_collection = db["users"]
 
 # ────────────────────────────────────────────────
 # منوی اصلی کاربران
@@ -81,47 +66,15 @@ def get_admin_panel():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ────────────────────────────────────────────────
-# شروع
-# ────────────────────────────────────────────────
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    now = datetime.now()
-
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
-    if not cursor.fetchone():
-        cursor.execute("""
-        INSERT INTO users (user_id, full_name, username, joined_at)
-        VALUES (?, ?, ?, ?)
-        """, (user.id, user.full_name, user.username, now.isoformat()))
-        conn.commit()
-
-    text = (
-        f"سلام {user.first_name} 👋\n\n"
-        f"به ربات رسمی ورودی بهمن خوش اومدی 🎓\n\n"
-        f"📸 لطفاً عکس چاپ انتخاب واحد ترم جاری رو برام بفرست\n"
-        f"تا بعد از تایید، لینک گروه اصلی برات ارسال بشه\n\n"
-        "عکس رو بفرست ↓"
-    )
-
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=MAIN_MENU)
-
-# ────────────────────────────────────────────────
-# پنل رئیس (/admin)
-# ────────────────────────────────────────────────
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ دسترسی ندارید.")
         return
-
     await update.message.reply_text(
         "👑 پنل مدیریتی رئیس ربات",
         reply_markup=get_admin_panel()
     )
 
-# ────────────────────────────────────────────────
-# هندلر callback پنل رئیس
-# ────────────────────────────────────────────────
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -133,43 +86,36 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "admin_stats":
-        cursor.execute("SELECT COUNT(*) FROM users")
-        total = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM users WHERE status='approved'")
-        approved = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM users WHERE status='rejected'")
-        rejected = cursor.fetchone()[0]
+        total = users_collection.count_documents({})
+        approved = users_collection.count_documents({"status": "approved"})
+        rejected = users_collection.count_documents({"status": "rejected"})
 
-        text = f"آمار کاربران:\n\nکل: {total}\nتایید شده: {approved}\nرد شده: {rejected}"
+        text = f"📊 آمار کاربران:\n\nکل: {total}\nتایید شده: {approved}\nرد شده: {rejected}"
         await query.edit_message_text(text, reply_markup=get_admin_panel())
 
     elif data == "admin_broadcast":
-        await query.edit_message_text("متن پیام همگانی را بنویسید:")
+        await query.edit_message_text("📢 متن پیام همگانی را بنویسید و ارسال کنید.")
         context.user_data["admin_mode"] = "broadcast"
 
     elif data == "admin_search_user":
-        await query.edit_message_text("آیدی عددی یا یوزرنیم کاربر را وارد کنید:")
+        await query.edit_message_text("🔍 آیدی عددی یا یوزرنیم کاربر را وارد کنید.")
         context.user_data["admin_mode"] = "search_user"
 
     elif data == "admin_rejected_list":
-        cursor.execute("SELECT user_id, full_name, username, reject_until FROM users WHERE status = 'rejected'")
-        rows = cursor.fetchall()
-        text = "🚫 کاربران رد شده:\n\n" if rows else "هیچ کاربری رد نشده است."
-        for r in rows:
-            text += f"ID: {r[0]} | {r[1]} | @{r[2] or 'ندارد'} | تا: {r[3] or '-'}\n"
+        rejected = list(users_collection.find({"status": "rejected"}))
+        text = "هیچ کاربری رد نشده است." if not rejected else "🚫 کاربران رد شده:\n\n"
+        for u in rejected:
+            text += f"ID: {u['user_id']} | {u['full_name']} | @{u.get('username', 'ندارد')} | تا: {u.get('reject_until', '-')}\n"
         await query.edit_message_text(text, reply_markup=get_admin_panel())
 
     elif data == "admin_delete_user":
-        await query.edit_message_text("آیدی عددی کاربر را برای حذف وارد کنید:")
+        await query.edit_message_text("🗑 آیدی عددی کاربر را وارد کنید.")
         context.user_data["admin_mode"] = "delete_user"
 
     elif data == "admin_reset_user":
-        await query.edit_message_text("آیدی عددی کاربر را برای ریست وارد کنید:")
+        await query.edit_message_text("🔄 آیدی عددی کاربر را وارد کنید.")
         context.user_data["admin_mode"] = "reset_user"
 
-# ────────────────────────────────────────────────
-# هندلر متن پنل رئیس
-# ────────────────────────────────────────────────
 async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID or "admin_mode" not in context.user_data:
         return
@@ -178,44 +124,47 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = update.message.text.strip()
 
     if mode == "broadcast":
-        cursor.execute("SELECT user_id FROM users WHERE status = 'approved'")
-        users = [r[0] for r in cursor.fetchall()]
+        approved_users = users_collection.find({"status": "approved"})
         sent = 0
-        for uid in users:
+        for u in approved_users:
             try:
-                await context.bot.send_message(uid, text)
+                await context.bot.send_message(u["user_id"], text)
                 sent += 1
             except:
                 pass
-        await update.message.reply_text(f"ارسال شد به {sent} نفر")
+        await update.message.reply_text(f"پیام به {sent} کاربر تاییدشده ارسال شد.")
         context.user_data.pop("admin_mode", None)
 
     elif mode == "search_user":
         try:
             uid = int(text)
-            cursor.execute("SELECT * FROM users WHERE user_id = ?", (uid,))
+            user = users_collection.find_one({"user_id": uid})
         except ValueError:
-            cursor.execute("SELECT * FROM users WHERE username = ?", (text.lstrip('@'),))
+            user = users_collection.find_one({"username": text.lstrip('@')})
 
-        row = cursor.fetchone()
-        reply = "کاربر پیدا نشد." if not row else (
-            f"ID: {row[0]}\n"
-            f"نام: {row[1]}\n"
-            f"یوزرنیم: @{row[2] or 'ندارد'}\n"
-            f"وضعیت: {row[3]}\n"
-            f"ورود: {row[4]}\n"
-            f"ارسال عکس: {row[5] or '-'}\n"
-            f"رد تا: {row[6] or '-'}"
-        )
+        if user:
+            reply = (
+                f"ID: {user['user_id']}\n"
+                f"نام: {user['full_name']}\n"
+                f"یوزرنیم: @{user.get('username', 'ندارد')}\n"
+                f"وضعیت: {user['status']}\n"
+                f"ورود: {user.get('joined_at', '-')}\n"
+                f"ارسال عکس: {user.get('submitted_at', '-')}\n"
+                f"رد تا: {user.get('reject_until', '-')}"
+            )
+        else:
+            reply = "کاربر پیدا نشد."
         await update.message.reply_text(reply)
         context.user_data.pop("admin_mode", None)
 
     elif mode == "delete_user":
         try:
             uid = int(text)
-            cursor.execute("DELETE FROM users WHERE user_id = ?", (uid,))
-            conn.commit()
-            await update.message.reply_text(f"کاربر {uid} حذف شد.")
+            result = users_collection.delete_one({"user_id": uid})
+            if result.deleted_count > 0:
+                await update.message.reply_text(f"کاربر {uid} حذف شد.")
+            else:
+                await update.message.reply_text("کاربر پیدا نشد.")
         except:
             await update.message.reply_text("آیدی نامعتبر.")
         context.user_data.pop("admin_mode", None)
@@ -223,11 +172,10 @@ async def admin_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif mode == "reset_user":
         try:
             uid = int(text)
-            cursor.execute(
-                "UPDATE users SET status = 'joined', submitted_at = NULL, reject_until = NULL WHERE user_id = ?",
-                (uid,)
+            users_collection.update_one(
+                {"user_id": uid},
+                {"$set": {"status": "joined", "submitted_at": None, "reject_until": None}}
             )
-            conn.commit()
             await update.message.reply_text(f"وضعیت کاربر {uid} ریست شد.")
         except:
             await update.message.reply_text("آیدی نامعتبر.")
@@ -271,14 +219,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
 
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
-    row = cursor.fetchone()
+    user_data = users_collection.find_one({"user_id": user.id})
+    if not user_data:
+        users_collection.insert_one({
+            "user_id": user.id,
+            "full_name": user.full_name,
+            "username": user.username,
+            "status": "joined",
+            "joined_at": now.isoformat()
+        })
+        user_data = users_collection.find_one({"user_id": user.id})
 
-    if not row:
-        await update.message.reply_text("لطفاً ابتدا /start بزنید", reply_markup=MAIN_MENU)
-        return
-
-    _, _, submitted_at, reject_until_str = row[3], row[4], row[5], row[6]
+    reject_until_str = user_data.get("reject_until")
+    submitted_at = user_data.get("submitted_at")
 
     if reject_until_str and now < datetime.fromisoformat(reject_until_str):
         await update.message.reply_text("⛔ فعلاً نمی‌توانید عکس بفرستید (۲۴ ساعت محدودیت)", reply_markup=MAIN_MENU)
@@ -309,9 +262,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML"
     )
 
-    cursor.execute("UPDATE users SET submitted_at = ?, status = 'submitted' WHERE user_id = ?",
-                   (now.isoformat(), user.id))
-    conn.commit()
+    users_collection.update_one(
+        {"user_id": user.id},
+        {"$set": {"submitted_at": now.isoformat(), "status": "submitted"}}
+    )
 
     await update.message.reply_text("عکس دریافت شد. منتظر بررسی باشید.", reply_markup=MAIN_MENU)
 
@@ -360,18 +314,10 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
 
-    logging.debug(f"پیام جدید در گروه ادمین از {message.from_user.id}: {message.text}")
-
     if message.chat.id != ADMIN_GROUP_ID:
-        logging.debug("پیام خارج از گروه ادمین - نادیده گرفته شد")
         return
 
-    if message.reply_to_message:
-        logging.debug(f"پیام reply است. متن والد: {message.reply_to_message.text[:100]}...")
-
     if message.reply_to_message and "تیکت جدید" in message.reply_to_message.text:
-        logging.debug("پیام reply به تیکت شناسایی شد")
-
         replied = message.reply_to_message
         reply_text = message.text.strip()
 
@@ -379,16 +325,12 @@ async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await message.reply_text("متن پاسخ خالی است", quote=True)
             return
 
-        # استخراج آیدی کاربر با regex قوی‌تر
         match = re.search(r"آیدی:\s*(?:<code>)?(\d+)(?:</code>)?", replied.text)
         user_id = int(match.group(1)) if match else None
 
         if not user_id:
-            logging.warning("آیدی دانشجو پیدا نشد")
             await message.reply_text("⚠️ آیدی دانشجو پیدا نشد", quote=True)
             return
-
-        logging.info(f"پاسخ برای کاربر {user_id} در حال ارسال")
 
         try:
             await context.bot.send_message(
@@ -403,16 +345,11 @@ async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
 
             await message.reply_text("پاسخ با موفقیت ارسال شد.", quote=True)
-            logging.info("پاسخ موفق ارسال شد")
 
         except Exception as e:
-            logging.error(f"خطا در ارسال پاسخ: {str(e)}")
             await message.reply_text(f"خطا در ارسال پاسخ:\n{str(e)}", quote=True)
 
         return
-
-    else:
-        logging.debug("پیام reply به تیکت نبود - نادیده گرفته شد")
 
 # ────────────────────────────────────────────────
 # دکمه‌های inline (تایید، رد، بستن، اسپم)
@@ -435,14 +372,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🎉 تایید شدید!\n\nلینک گروه:\n{MAIN_GROUP_LINK}\n\nموفق باشید!",
             disable_web_page_preview=True
         )
-        cursor.execute("UPDATE users SET status='approved', reject_until=NULL WHERE user_id=?", (user_id,))
-        conn.commit()
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"status": "approved", "reject_until": None}}
+        )
         await query.edit_message_text("✅ تایید شد – لینک ارسال گردید")
 
     elif action == "deny":
         ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
-        cursor.execute("UPDATE users SET status='rejected', reject_until=? WHERE user_id=?", (ban_until, user_id))
-        conn.commit()
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"status": "rejected", "reject_until": ban_until}}
+        )
         await context.bot.send_message(user_id, "😔 رد شدید. ۲۴ ساعت دیگر امتحان کنید.")
         await query.edit_message_text("❌ رد شد – ۲۴ ساعت محدودیت")
 
@@ -454,8 +395,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "spam":
         ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
-        cursor.execute("UPDATE users SET reject_until=? WHERE user_id=?", (ban_until, user_id))
-        conn.commit()
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"reject_until": ban_until}}
+        )
         await context.bot.send_message(
             user_id,
             "⛔ تیکت شما اسپم تشخیص داده شد. ۲۴ ساعت محدود شدید."
@@ -466,41 +409,35 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("کاربر محدود شد")
 
 # ────────────────────────────────────────────────
-# اجرا (ترتیب هندلرها اصلاح شده)
+# اجرا
 # ────────────────────────────────────────────────
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # دستورات پایه
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("admin", admin_panel))
 
-    # منو
     app.add_handler(MessageHandler(
         filters.Regex("^(📸 ارسال عکس تاییدیه|🎫 ثبت تیکت|ℹ️ راهنما|ℹ راهنما)$"),
         handle_menu
     ))
 
-    # عکس
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    # ثبت تیکت
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & ~filters.Regex("^(📸 ارسال عکس تاییدیه|ℹ️ راهنما|ℹ راهنما)$"),
         ticket_handler
     ))
 
-    # پیام‌های گروه ادمین (اول اضافه شده تا reply رو بگیره)
+    # هندلر گروه ادمین (اول اضافه شده تا reply رو بگیره)
     app.add_handler(MessageHandler(
         filters.Chat(chat_id=ADMIN_GROUP_ID) & filters.TEXT & ~filters.COMMAND,
         handle_group_reply
     ))
 
-    # دکمه‌های inline
     app.add_handler(CallbackQueryHandler(button))
 
-    # پنل رئیس (آخر اضافه شده تا تداخل نکنه)
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_text_handler))
 
