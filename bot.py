@@ -1,8 +1,9 @@
 import os
+import sqlite3
 import logging
 import re
 from datetime import datetime, timedelta
-from pymongo import MongoClient
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -23,25 +24,35 @@ from telegram.ext import (
 # تنظیمات اصلی
 # ────────────────────────────────────────────────
 TOKEN = os.getenv("TOKEN")
-MAIN_GROUP_LINK = os.getenv("MAIN_GROUP_LINK", "https://t.me/+kCh_9St0vVdhNGJk")
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "-1003703559282"))
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7940304990"))
-REJECT_BAN_HOURS = int(os.getenv("REJECT_BAN_HOURS", "24"))
-
-MONGODB_URI = os.getenv("MONGODB_URI")
-
-if not MONGODB_URI:
-    raise ValueError("MONGODB_URI تنظیم نشده است.")
+MAIN_GROUP_LINK = "https://t.me/+kCh_9St0vVdhNGJk"  # لینک ثابت (فقط برای مواقع خطا)
+ADMIN_GROUP_ID = -1003703559282                     # گروه ادمین‌ها (بررسی عکس و تیکت)
+MAIN_STUDENTS_GROUP_ID = -1003754380100             # گروه اصلی دانشجویان (ورود نهایی)
+ADMIN_ID = 7940304990                               # ایدی رئیس ربات
+REJECT_BAN_HOURS = 24
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# اتصال به MongoDB
-client = MongoClient(MONGODB_URI)
-db = client["medical_students"]
-users_collection = db["users"]
+# ────────────────────────────────────────────────
+# دیتابیس SQLite
+# ────────────────────────────────────────────────
+conn = sqlite3.connect("students.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id          INTEGER PRIMARY KEY,
+    full_name        TEXT,
+    username         TEXT,
+    status           TEXT DEFAULT 'joined',
+    joined_at        TEXT,
+    submitted_at     TEXT,
+    reject_until     TEXT
+)
+""")
+conn.commit()
 
 # ────────────────────────────────────────────────
 # منوی اصلی کاربران
@@ -77,21 +88,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
 
-    user_data = users_collection.find_one({"user_id": user.id})
-    if not user_data:
-        users_collection.insert_one({
-            "user_id": user.id,
-            "full_name": user.full_name,
-            "username": user.username,
-            "status": "joined",
-            "joined_at": now.isoformat()
-        })
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+    if not cursor.fetchone():
+        cursor.execute("""
+        INSERT INTO users (user_id, full_name, username, joined_at)
+        VALUES (?, ?, ?, ?)
+        """, (user.id, user.full_name, user.username, now.isoformat()))
+        conn.commit()
 
     text = (
         f"سلام {user.first_name} 👋\n\n"
         f"به ربات رسمی ورودی بهمن خوش اومدی 🎓\n\n"
         f"📸 لطفاً عکس چاپ انتخاب واحد ترم جاری رو برام بفرست\n"
-        f"تا بعد از تایید، لینک گروه اصلی برات ارسال بشه\n\n"
+        f"تا بعد از تایید، لینک **اختصاصی** گروه اصلی برات ارسال بشه\n\n"
         "عکس رو بفرست ↓"
     )
 
@@ -135,13 +144,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now()
 
-    user_data = users_collection.find_one({"user_id": user.id})
-    if not user_data:
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user.id,))
+    row = cursor.fetchone()
+
+    if not row:
         await update.message.reply_text("لطفاً ابتدا /start بزنید", reply_markup=MAIN_MENU)
         return
 
-    reject_until_str = user_data.get("reject_until")
-    submitted_at = user_data.get("submitted_at")
+    _, _, submitted_at, reject_until_str = row[3], row[4], row[5], row[6]
 
     if reject_until_str and now < datetime.fromisoformat(reject_until_str):
         await update.message.reply_text("⛔ فعلاً نمی‌توانید عکس بفرستید (۲۴ ساعت محدودیت)", reply_markup=MAIN_MENU)
@@ -172,10 +182,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML"
     )
 
-    users_collection.update_one(
-        {"user_id": user.id},
-        {"$set": {"submitted_at": now.isoformat(), "status": "submitted"}}
-    )
+    cursor.execute("UPDATE users SET submitted_at = ?, status = 'submitted' WHERE user_id = ?",
+                   (now.isoformat(), user.id))
+    conn.commit()
 
     await update.message.reply_text("عکس دریافت شد. منتظر بررسی باشید.", reply_markup=MAIN_MENU)
 
@@ -219,7 +228,7 @@ async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("awaiting_ticket", None)
 
 # ────────────────────────────────────────────────
-# پاسخ‌دهی با Reply در گروه + دکمه‌های بستن و اسپم
+# پاسخ‌دهی با Reply در گروه ادمین‌ها
 # ────────────────────────────────────────────────
 async def handle_group_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -277,23 +286,35 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = int(uid_str)
 
     if action == "approve":
+        # ساخت لینک دعوت اختصاصی با ظرفیت ۱ نفر → گروه اصلی دانشجویان
+        try:
+            invite_link = await context.bot.create_chat_invite_link(
+                chat_id=MAIN_STUDENTS_GROUP_ID,
+                name=f"دعوت {user.full_name} - {datetime.now().strftime('%Y-%m-%d')}",
+                member_limit=1,
+                expire_date=datetime.now() + timedelta(days=7)
+            )
+            link = invite_link.invite_link
+        except Exception as e:
+            logging.error(f"خطا در ساخت لینک دعوت: {str(e)}")
+            link = MAIN_GROUP_LINK  # fallback به لینک ثابت
+
         await context.bot.send_message(
             user_id,
-            f"🎉 تایید شدید!\n\nلینک گروه:\n{MAIN_GROUP_LINK}\n\nموفق باشید!",
+            f"🎉 تبریک! انتخاب واحدت تایید شد 🌟\n\n"
+            f"لینک اختصاصی گروه اصلی (فقط برای تو):\n{link}\n\n"
+            f"این لینک فقط برای ۱ نفر کار می‌کنه و ۷ روز اعتبار داره.\n"
+            "موفق باشی ستاره! 🚀",
             disable_web_page_preview=True
         )
-        users_collection.update_one(
-            {"user_id": user_id},
-            {"$set": {"status": "approved", "reject_until": None}}
-        )
-        await query.edit_message_text("✅ تایید شد – لینک ارسال گردید")
+        cursor.execute("UPDATE users SET status='approved', reject_until=NULL WHERE user_id=?", (user_id,))
+        conn.commit()
+        await query.edit_message_text("✅ تایید شد – لینک اختصاصی ارسال گردید")
 
     elif action == "deny":
         ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
-        users_collection.update_one(
-            {"user_id": user_id},
-            {"$set": {"status": "rejected", "reject_until": ban_until}}
-        )
+        cursor.execute("UPDATE users SET status='rejected', reject_until=? WHERE user_id=?", (ban_until, user_id))
+        conn.commit()
         await context.bot.send_message(user_id, "😔 رد شدید. ۲۴ ساعت دیگر امتحان کنید.")
         await query.edit_message_text("❌ رد شد – ۲۴ ساعت محدودیت")
 
@@ -305,10 +326,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "spam":
         ban_until = (datetime.now() + timedelta(hours=REJECT_BAN_HOURS)).isoformat()
-        users_collection.update_one(
-            {"user_id": user_id},
-            {"$set": {"reject_until": ban_until}}
-        )
+        cursor.execute("UPDATE users SET reject_until=? WHERE user_id=?", (ban_until, user_id))
+        conn.commit()
         await context.bot.send_message(
             user_id,
             "⛔ تیکت شما اسپم تشخیص داده شد. ۲۴ ساعت محدود شدید."
@@ -317,19 +336,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query.message.text + "\n\n🚫 اسپم – کاربر محدود شد"
         )
         await query.answer("کاربر محدود شد")
-
-# ────────────────────────────────────────────────
-# پنل رئیس ربات (/admin)
-# ────────────────────────────────────────────────
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ دسترسی ندارید.")
-        return
-
-    await update.message.reply_text(
-        "👑 پنل مدیریتی رئیس ربات",
-        reply_markup=get_admin_panel()
-    )
 
 # ────────────────────────────────────────────────
 # اجرا
