@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, MessageHandler, CallbackQueryHandler, ChatMemberHandler, filters, ContextTypes
 
-TOKEN = os.getenv("8447467593:AAFieUAv3olKpD7DlOywV5xRDQ9jtJxXpBc")
+TOKEN = os.getenv("TOKEN")
 
 PRE_GROUP_ID = -1003755161770
 ADMIN_GROUP_ID = -1003703559282
