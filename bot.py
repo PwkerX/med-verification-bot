@@ -9,7 +9,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    KeyboardButton
+    KeyboardButton,
+    Chat
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -55,7 +56,7 @@ CREATE TABLE IF NOT EXISTS users (
 conn.commit()
 
 # ────────────────────────────────────────────────
-# منوی اصلی کاربران
+# منوی اصلی کاربران (فقط در PV)
 # ────────────────────────────────────────────────
 MAIN_MENU = ReplyKeyboardMarkup(
     [
@@ -85,6 +86,10 @@ def get_admin_panel():
 # شروع
 # ────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    if chat_type != Chat.PRIVATE:
+        return  # در گروه هیچ واکنشی نده
+
     user = update.effective_user
     now = datetime.now()
 
@@ -110,6 +115,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # راهنما
 # ────────────────────────────────────────────────
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    if chat_type != Chat.PRIVATE:
+        return  # در گروه هیچ واکنشی نده
+
     text = (
         "ℹ️ راهنما\n\n"
         "📸 عکس چاپ انتخاب واحد را ارسال کنید (یک بار)\n"
@@ -123,6 +132,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # دکمه‌های منو
 # ────────────────────────────────────────────────
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    if chat_type != Chat.PRIVATE:
+        return  # در گروه هیچ واکنشی نده
+
     text = update.message.text
 
     if text == "📸 ارسال عکس تاییدیه":
@@ -141,6 +154,10 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # دریافت عکس
 # ────────────────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    if chat_type != Chat.PRIVATE:
+        return  # در گروه هیچ واکنشی نده
+
     user = update.effective_user
     now = datetime.now()
 
@@ -192,6 +209,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ثبت تیکت
 # ────────────────────────────────────────────────
 async def ticket_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    if chat_type != Chat.PRIVATE:
+        return  # در گروه هیچ واکنشی نده
+
     if not context.user_data.get("awaiting_ticket"):
         return
 
@@ -293,7 +314,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "approve":
         try:
             invite_link = await context.bot.create_chat_invite_link(
-                chat_id=-1003754380100,  # گروه اصلی دانشجویان
+                chat_id=MAIN_STUDENTS_GROUP_ID,
                 name=f"دعوت {full_name} - {datetime.now().strftime('%Y-%m-%d')}",
                 member_limit=1,
                 expire_date=datetime.now() + timedelta(days=7)
@@ -345,6 +366,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # پنل رئیس ربات (/admin)
 # ────────────────────────────────────────────────
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_type = update.effective_chat.type
+    if chat_type != Chat.PRIVATE:
+        return  # در گروه هیچ واکنشی نده
+
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ دسترسی ندارید.")
         return
